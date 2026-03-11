@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import random
+import time
+from collections.abc import Callable
 
 import joblib
 import numpy as np
@@ -37,7 +39,12 @@ def evaluate(model, loader, criterion, device):
     return float(np.mean(losses))
 
 
-def train_once(data_path: str, output_dir: str, cfg: TrainConfig) -> None:
+def train_once(
+    data_path: str,
+    output_dir: str,
+    cfg: TrainConfig,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> None:
     os.makedirs(output_dir, exist_ok=True)
     set_deterministic(cfg.seed)
 
@@ -68,6 +75,7 @@ def train_once(data_path: str, output_dir: str, cfg: TrainConfig) -> None:
     patience = 10
     stale = 0
 
+    train_start = time.perf_counter()
     for epoch in range(1, cfg.epochs + 1):
         model.train()
         epoch_losses = []
@@ -85,8 +93,23 @@ def train_once(data_path: str, output_dir: str, cfg: TrainConfig) -> None:
         val_loss = evaluate(model, val_loader, criterion, device)
         scheduler.step(val_loss)
         train_loss = float(np.mean(epoch_losses))
+        elapsed = time.perf_counter() - train_start
+        eta_seconds = (elapsed / epoch) * (cfg.epochs - epoch) if epoch else 0.0
 
         print(f"epoch={epoch:03d} train={train_loss:.6f} val={val_loss:.6f}")
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "kind": "forecast",
+                    "epoch": epoch,
+                    "total_epochs": cfg.epochs,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "progress": epoch / max(cfg.epochs, 1),
+                    "eta_seconds": max(0.0, eta_seconds),
+                    "elapsed_seconds": elapsed,
+                }
+            )
 
         if val_loss < best_val:
             best_val = val_loss

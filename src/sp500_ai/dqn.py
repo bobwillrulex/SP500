@@ -5,6 +5,8 @@ import json
 import math
 import os
 import random
+import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 import joblib
@@ -214,7 +216,12 @@ def _save_checkpoint(
     )
 
 
-def train_dqn(data_path: str, output_dir: str, cfg: DQNConfig) -> None:
+def train_dqn(
+    data_path: str,
+    output_dir: str,
+    cfg: DQNConfig,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> None:
     os.makedirs(output_dir, exist_ok=True)
     set_seed(cfg.seed)
 
@@ -234,6 +241,7 @@ def train_dqn(data_path: str, output_dir: str, cfg: DQNConfig) -> None:
 
     best_eval_reward = float("-inf")
     total_steps = 0
+    train_start = time.perf_counter()
 
     for episode in range(1, cfg.episodes + 1):
         state = env.reset()
@@ -288,6 +296,7 @@ def train_dqn(data_path: str, output_dir: str, cfg: DQNConfig) -> None:
                 for target_param, param in zip(target_net.parameters(), policy_net.parameters()):
                     target_param.data.copy_(cfg.tau * param.data + (1.0 - cfg.tau) * target_param.data)
 
+        eval_reward = None
         if episode % cfg.eval_interval == 0:
             eval_reward = evaluate_policy(env, policy_net, device)
             print(
@@ -299,6 +308,23 @@ def train_dqn(data_path: str, output_dir: str, cfg: DQNConfig) -> None:
                 torch.save(policy_net.state_dict(), os.path.join(output_dir, "best_dqn_policy.pt"))
         else:
             print(f"episode={episode:04d} train_reward={ep_reward:.4f} eps={_epsilon(total_steps, cfg):.4f}")
+
+        elapsed = time.perf_counter() - train_start
+        eta_seconds = (elapsed / episode) * (cfg.episodes - episode) if episode else 0.0
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "kind": "dqn",
+                    "episode": episode,
+                    "total_episodes": cfg.episodes,
+                    "train_reward": ep_reward,
+                    "eval_reward": eval_reward,
+                    "epsilon": _epsilon(total_steps, cfg),
+                    "progress": episode / max(cfg.episodes, 1),
+                    "eta_seconds": max(0.0, eta_seconds),
+                    "elapsed_seconds": elapsed,
+                }
+            )
 
         if episode % cfg.checkpoint_interval == 0:
             _save_checkpoint(
