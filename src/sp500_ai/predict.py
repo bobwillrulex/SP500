@@ -19,19 +19,17 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
-
-    meta_path = args.meta or args.model.replace("best_model.pt", "meta.json")
-    with open(meta_path, "r", encoding="utf-8") as f:
+def predict_next_close(data_path: str, model_path: str, scaler_path: str, meta_path: str | None = None) -> float:
+    resolved_meta_path = meta_path or model_path.replace("best_model.pt", "meta.json")
+    with open(resolved_meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
     cfg = meta["config"]
 
-    df = load_ohlcv_csv(args.data)
+    df = load_ohlcv_csv(data_path)
     prepared = prepare_data(df, cfg["seq_len"], cfg["val_ratio"])
 
-    _ = joblib.load(args.scaler)
+    _ = joblib.load(scaler_path)
 
     model = PriceForecaster(
         n_features=prepared.latest_window.shape[-1],
@@ -40,13 +38,17 @@ def main():
         n_layers=cfg["n_layers"],
         dropout=cfg["dropout"],
     )
-    state = torch.load(args.model, map_location="cpu")
+    state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(state)
     model.eval()
 
     with torch.no_grad():
-        pred = model(prepared.latest_window).item()
+        return model(prepared.latest_window).item()
 
+
+def main():
+    args = parse_args()
+    pred = predict_next_close(args.data, args.model, args.scaler, args.meta)
     print(f"Predicted next close: {pred:.4f}")
 
 
