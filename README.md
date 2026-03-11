@@ -1,6 +1,8 @@
 # S&P 500 Advanced Forecasting Pipeline
 
-This repository provides a deterministic, GPU-ready deep learning pipeline for **next-day S&P 500 close prediction**.
+This repository provides deterministic, GPU-ready deep learning pipelines for:
+- **next-day S&P 500 close forecasting**,
+- **DQN-based daily BUY/SELL/HOLD signal generation**.
 
 ## Important reality check
 No model can be "extremely accurate" every day on financial markets. This project is designed to be:
@@ -23,6 +25,8 @@ No model can be "extremely accurate" every day on financial markets. This projec
 - Yahoo Finance downloader for `^GSPC` with normalized OHLCV output.
 - Optional SQLite persistence for downloaded OHLCV history.
 - Interactive console menu (`py main.py` / `python main.py`) for fetching data, training, predicting, and continuous training.
+- Separate DQN trading agent with dueling architecture, prioritized replay, Double-DQN target logic, and configurable regularization/exploration controls.
+- DQN crash-recovery checkpoints saved every configurable N episodes (default: every 50).
 
 ## Expected data format
 CSV with at least:
@@ -91,12 +95,27 @@ py main.py
 
 If you run `py main.py` directly from the repository checkout, `main.py` now auto-adds the local `src/` folder to `PYTHONPATH` so `sp500_ai` imports resolve without extra setup.
 
-Menu options:
+Top-level menu now asks you to choose a mode first:
+1. Forecast pipeline
+2. DQN trading bot
+3. Exit
+
+The forecast submenu keeps download/train/predict/continuous options.
+
+The DQN submenu includes:
 1. Download latest Yahoo historical data (`^GSPC`)
-2. Train model
-3. Predict next close
-4. Start continuous training
-5. Exit
+2. Train DQN
+3. Predict latest action (BUY/SELL/HOLD)
+4. Back
+
+Both training flows expose important hyperparameters interactively (dropout, weight decay, sequence length, learning rate, etc.) so you can tune for overfitting/underfitting behavior.
+
+For DQN training, key robustness knobs include replay buffer size, epsilon schedule, target update cadence, penalties for transaction/over-trading, reward scale, and checkpoint interval.
+
+CLI DQN training is also available:
+```bash
+python -m sp500_ai.dqn --data data/sp500.csv --output artifacts/dqn_run1
+```
 
 When downloading from Yahoo, the app prints the **latest OHLCV row** to the console so you can confirm the columns are correctly matched.
 
