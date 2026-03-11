@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from sp500_ai.config import TrainConfig
 from sp500_ai.predict import predict_next_close
@@ -56,8 +63,9 @@ def main() -> None:
 
         if choice == "1":
             output_path = ask("Output CSV path", "data/sp500.csv")
+            db_path = ask("SQLite DB path (leave blank to skip DB)", "data/sp500.db")
             period = ask("Yahoo period (e.g., 1y, 5y, max)", "max")
-            fetch_sp500_history(output_path=output_path, period=period)
+            fetch_sp500_history(output_path=output_path, period=period, db_path=db_path)
             print(f"Saved normalized OHLCV data to {output_path}")
         elif choice == "2":
             data_path = ask("Input CSV path", "data/sp500.csv")

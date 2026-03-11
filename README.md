@@ -21,6 +21,7 @@ No model can be "extremely accurate" every day on financial markets. This projec
 - Continuous training loop (24/7) polling for fresh historical data.
 - Walk-forward style validation split.
 - Yahoo Finance downloader for `^GSPC` with normalized OHLCV output.
+- Optional SQLite persistence for downloaded OHLCV history.
 - Interactive console menu (`py main.py` / `python main.py`) for fetching data, training, predicting, and continuous training.
 
 ## Expected data format
@@ -88,6 +89,8 @@ py main.py
 ```
 (or `python main.py` on Linux/macOS)
 
+If you run `py main.py` directly from the repository checkout, `main.py` now auto-adds the local `src/` folder to `PYTHONPATH` so `sp500_ai` imports resolve without extra setup.
+
 Menu options:
 1. Download latest Yahoo historical data (`^GSPC`)
 2. Train model
@@ -96,6 +99,8 @@ Menu options:
 5. Exit
 
 When downloading from Yahoo, the app prints the **latest OHLCV row** to the console so you can confirm the columns are correctly matched.
+
+You can also provide a SQLite path (default: `data/sp500.db`) and the same OHLCV rows will be upserted into table `sp500_ohlcv`.
 
 ## Reproducibility notes
 Reproducibility is strongest on the same hardware + same software versions.
