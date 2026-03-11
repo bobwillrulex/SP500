@@ -122,6 +122,7 @@ def train_once(
                 break
 
     joblib.dump(prepared.scaler, os.path.join(output_dir, "scaler.pkl"))
+    joblib.dump(prepared.target_scaler, os.path.join(output_dir, "target_scaler.pkl"))
 
     meta = {
         "feature_columns": prepared.feature_columns,

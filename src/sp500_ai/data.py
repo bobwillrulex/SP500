@@ -19,6 +19,7 @@ class PreparedData:
     y_val: torch.Tensor
     latest_window: torch.Tensor
     scaler: StandardScaler
+    target_scaler: StandardScaler
     feature_columns: list[str]
 
 
@@ -51,7 +52,8 @@ def prepare_data(df: pd.DataFrame, seq_len: int, val_ratio: float) -> PreparedDa
 
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(feats.values)
-    y = target.values.astype(np.float32)
+    y_scaler = StandardScaler()
+    y = y_scaler.fit_transform(target.values.reshape(-1, 1)).astype(np.float32).reshape(-1)
 
     x_seq, y_seq = _to_sequences(x_scaled, y, seq_len)
     if len(x_seq) < 10:
@@ -70,5 +72,6 @@ def prepare_data(df: pd.DataFrame, seq_len: int, val_ratio: float) -> PreparedDa
         y_val=torch.tensor(y_val).unsqueeze(-1),
         latest_window=latest_window,
         scaler=scaler,
+        target_scaler=y_scaler,
         feature_columns=list(feats.columns),
     )
