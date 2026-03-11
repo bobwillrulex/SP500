@@ -24,7 +24,7 @@ No model can be "extremely accurate" every day on financial markets. This projec
 - Walk-forward style validation split.
 - Yahoo Finance downloader for `^GSPC` with normalized OHLCV output.
 - Optional SQLite persistence for downloaded OHLCV history.
-- Interactive console menu (`py main.py` / `python main.py`) for fetching data, training, predicting, and continuous training.
+- Modern desktop GUI (`py main.py` / `python main.py`) for fetching data, training, predicting, continuous training, progress tracking, and parameter editing with persistence.
 - Separate DQN trading agent with dueling architecture, prioritized replay, Double-DQN target logic, and configurable regularization/exploration controls.
 - DQN crash-recovery checkpoints saved every configurable N episodes (default: every 50).
 
@@ -86,31 +86,31 @@ python -m sp500_ai.predict --data data/sp500.csv --model artifacts/run1/best_mod
 python -m sp500_ai.continuous_train --data data/sp500.csv --output artifacts/live --interval-seconds 3600
 ```
 
-## Interactive console GUI
+## Desktop GUI
 Run:
 ```bash
 py main.py
 ```
 (or `python main.py` on Linux/macOS)
 
-If you run `py main.py` directly from the repository checkout, `main.py` now auto-adds the local `src/` folder to `PYTHONPATH` so `sp500_ai` imports resolve without extra setup.
+If you run `py main.py` directly from the repository checkout, `main.py` auto-adds the local `src/` folder to `PYTHONPATH` so `sp500_ai` imports resolve without extra setup.
 
-Top-level menu now asks you to choose a mode first:
+The GUI provides two sleek tabs:
 1. Forecast pipeline
 2. DQN trading bot
-3. Exit
 
-The forecast submenu keeps download/train/predict/continuous options.
+Each tab includes one-click workflows for:
+- downloading latest Yahoo `^GSPC` data,
+- training,
+- inference/prediction.
 
-The DQN submenu includes:
-1. Download latest Yahoo historical data (`^GSPC`)
-2. Train DQN
-3. Predict latest action (BUY/SELL/HOLD)
-4. Back
+Forecast tab also includes continuous training controls (start/stop + interval).
 
-Both training flows expose important hyperparameters interactively (dropout, weight decay, sequence length, learning rate, etc.) so you can tune for overfitting/underfitting behavior.
+Both training flows provide progress bars plus ETA while training is running.
 
-For DQN training, key robustness knobs include replay buffer size, epsilon schedule, target update cadence, penalties for transaction/over-trading, reward scale, and checkpoint interval.
+All editable inputs (paths + hyperparameters) are persisted to `.gui_settings.json` so values are remembered across restarts.
+
+Each parameter section includes a **Reset to Defaults** button.
 
 CLI DQN training is also available:
 ```bash
