@@ -49,7 +49,7 @@ class SP500AIGUI(Tk):
         self._continuous_running = False
 
         self.defaults = {
-            "shared": {
+            "yahoo": {
                 "data_path": "data/sp500.csv",
                 "db_path": "data/sp500.db",
                 "period": "max",
@@ -121,15 +121,30 @@ class SP500AIGUI(Tk):
         self._build_shared_panel(dqn_tab)
         self._build_dqn_panel(dqn_tab)
 
-    def _var(self, key: str, default: str) -> StringVar:
-        value = self.settings.get(key, default)
+    def _var(self, key: str, default: str, legacy_keys: tuple[str, ...] = ()) -> StringVar:
+        value = self.settings.get(key)
+        if value is None:
+            for legacy in legacy_keys:
+                if legacy in self.settings:
+                    value = self.settings[legacy]
+                    break
+        if value is None:
+            value = default
         var = StringVar(value=value)
         self.vars[key] = var
         return var
 
-    def _add_field(self, parent: ttk.Frame, row: int, label: str, key: str, default: str) -> None:
+    def _add_field(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        label: str,
+        key: str,
+        default: str,
+        legacy_keys: tuple[str, ...] = (),
+    ) -> None:
         ttk.Label(parent, text=label, style="Field.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(parent, textvariable=self._var(key, default), width=40).grid(row=row, column=1, sticky="ew", pady=4)
+        ttk.Entry(parent, textvariable=self._var(key, default, legacy_keys), width=40).grid(row=row, column=1, sticky="ew", pady=4)
 
     def _build_shared_panel(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame")
@@ -137,9 +152,9 @@ class SP500AIGUI(Tk):
         card.columnconfigure(1, weight=1)
         ttk.Label(card, text="Market Data", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-        self._add_field(card, 1, "CSV path", "shared.data_path", self.defaults["shared"]["data_path"])
-        self._add_field(card, 2, "SQLite path (blank to skip)", "shared.db_path", self.defaults["shared"]["db_path"])
-        self._add_field(card, 3, "Yahoo period", "shared.period", self.defaults["shared"]["period"])
+        self._add_field(card, 1, "CSV path", "yahoo.data_path", self.defaults["yahoo"]["data_path"], ("shared.data_path",))
+        self._add_field(card, 2, "SQLite path (blank to skip)", "yahoo.db_path", self.defaults["yahoo"]["db_path"], ("shared.db_path",))
+        self._add_field(card, 3, "Yahoo period", "yahoo.period", self.defaults["yahoo"]["period"], ("shared.period",))
 
     def _build_forecast_panel(self, parent: ttk.Frame) -> None:
         actions = ttk.Frame(parent, style="Card.TFrame")
@@ -306,9 +321,9 @@ class SP500AIGUI(Tk):
 
         def job() -> None:
             fetch_sp500_history(
-                output_path=self.vars["shared.data_path"].get(),
-                period=self.vars["shared.period"].get(),
-                db_path=self.vars["shared.db_path"].get().strip() or None,
+                output_path=self.vars["yahoo.data_path"].get(),
+                period=self.vars["yahoo.period"].get(),
+                db_path=self.vars["yahoo.db_path"].get().strip() or None,
             )
 
         self._start_worker("download", job)
@@ -323,7 +338,7 @@ class SP500AIGUI(Tk):
             self._event_queue.put({"type": "forecast_progress", "data": data})
 
         def job() -> None:
-            train_once(self.vars["shared.data_path"].get(), self.vars["forecast.output_dir"].get(), cfg, progress_callback=callback)
+            train_once(self.vars["yahoo.data_path"].get(), self.vars["forecast.output_dir"].get(), cfg, progress_callback=callback)
 
         self._start_worker("forecast_train", job)
 
@@ -337,7 +352,7 @@ class SP500AIGUI(Tk):
             self._event_queue.put({"type": "dqn_progress", "data": data})
 
         def job() -> None:
-            train_dqn(self.vars["shared.data_path"].get(), self.vars["dqn.output_dir"].get(), cfg, progress_callback=callback)
+            train_dqn(self.vars["yahoo.data_path"].get(), self.vars["dqn.output_dir"].get(), cfg, progress_callback=callback)
 
         self._start_worker("dqn_train", job)
 
@@ -346,7 +361,7 @@ class SP500AIGUI(Tk):
 
         def job() -> None:
             pred = predict_next_close(
-                self.vars["shared.data_path"].get(),
+                self.vars["yahoo.data_path"].get(),
                 self.vars["forecast.model_path"].get(),
                 self.vars["forecast.scaler_path"].get(),
                 self.vars["forecast.meta_path"].get(),
@@ -360,7 +375,7 @@ class SP500AIGUI(Tk):
 
         def job() -> None:
             signal = predict_dqn_action(
-                self.vars["shared.data_path"].get(),
+                self.vars["yahoo.data_path"].get(),
                 self.vars["dqn.model_path"].get(),
                 self.vars["dqn.scaler_path"].get(),
                 self.vars["dqn.meta_path"].get(),
@@ -390,7 +405,7 @@ class SP500AIGUI(Tk):
                 run_dir = os.path.join(output_base, f"run_{ts}")
                 cfg = self._forecast_cfg()
                 self._event_queue.put({"type": "log", "target": "forecast", "message": f"continuous training -> {run_dir}"})
-                train_once(self.vars["shared.data_path"].get(), run_dir, cfg, progress_callback=lambda data: self._event_queue.put({"type": "forecast_progress", "data": data}))
+                train_once(self.vars["yahoo.data_path"].get(), run_dir, cfg, progress_callback=lambda data: self._event_queue.put({"type": "forecast_progress", "data": data}))
                 end = time.time() + interval
                 while time.time() < end and not self._continuous_stop.is_set():
                     time.sleep(0.2)
