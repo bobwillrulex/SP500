@@ -38,10 +38,6 @@ def predict_next_close(
     prepared = prepare_data(df, cfg["seq_len"], cfg["val_ratio"])
 
     _ = joblib.load(scaler_path)
-    try:
-        target_scaler = joblib.load(resolved_target_scaler_path)
-    except FileNotFoundError:
-        target_scaler = None
 
     model = PriceForecaster(
         n_features=prepared.latest_window.shape[-1],
@@ -57,10 +53,24 @@ def predict_next_close(
     with torch.no_grad():
         normalized_pred = model(prepared.latest_window).item()
 
-    if target_scaler is None:
-        return float(normalized_pred)
+    target_type = meta.get("target_type")
+    if target_type is None:
+        target_type = "next_return"
 
-    return float(target_scaler.inverse_transform([[normalized_pred]])[0, 0])
+    if target_type == "next_return":
+        try:
+            target_scaler = joblib.load(resolved_target_scaler_path)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"Missing target scaler at '{resolved_target_scaler_path}'. "
+                "Re-train the forecast model artifacts and try again."
+            ) from exc
+
+        predicted_return = float(target_scaler.inverse_transform([[normalized_pred]])[0, 0])
+        return float(prepared.latest_close * (1.0 + predicted_return))
+
+    # Legacy compatibility for old checkpoints that predicted raw close directly.
+    return float(normalized_pred)
 
 
 def main():
