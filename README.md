@@ -117,6 +117,28 @@ CLI DQN training is also available:
 python -m sp500_ai.dqn --data data/sp500.csv --output artifacts/dqn_run1
 ```
 
+You can retune DQN without editing code by overriding any `DQNConfig` field from CLI, for example:
+```bash
+python -m sp500_ai.dqn \
+  --data data/sp500.csv \
+  --output artifacts/dqn_tuned \
+  --episodes 800 \
+  --epsilon-end 0.02 \
+  --epsilon-decay-steps 80000 \
+  --transaction-cost 0.002 \
+  --hold-penalty 0.00003 \
+  --overtrade-penalty 0.0006 \
+  --reward-scale 10.0 \
+  --min-train-window 500 \
+  --max-train-window 1600
+```
+
+Or load a JSON config file with `--config-json path/to/dqn_config.json`.
+
+DQN logs now also report `train_r_step` / `eval_r_step` (reward per step), so metrics are comparable across variable episode slice lengths.
+
+Default DQN settings were tuned toward better out-of-sample stability with stricter frictions and anti-overfit bias (higher transaction/overtrade/hold penalties, slower exploration decay with higher terminal exploration, lower reward scaling and return clipping, and larger less-recency-biased training windows).
+
 When downloading from Yahoo, the app prints the **latest OHLCV row** to the console so you can confirm the columns are correctly matched.
 
 You can also provide a SQLite path (default: `data/sp500.db`) and the same OHLCV rows will be upserted into table `sp500_ohlcv`.

@@ -24,29 +24,29 @@ from .features import build_features
 class DQNConfig:
     seq_len: int = 30
     episodes: int = 500
-    batch_size: int = 256
+    batch_size: int = 192
     replay_size: int = 20000
-    warmup_steps: int = 2000
+    warmup_steps: int = 4000
     hidden_dim: int = 256
     dropout: float = 0.15
     lr: float = 2e-4
     weight_decay: float = 1e-5
-    gamma: float = 0.99
+    gamma: float = 0.97
     tau: float = 0.01
     grad_clip: float = 1.0
     target_update_interval: int = 10
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.1
-    epsilon_decay_steps: int = 25000
-    transaction_cost: float = 0.001
-    hold_penalty: float = 0.00008
-    overtrade_penalty: float = 0.00025
-    reward_scale: float = 25.0
+    epsilon_end: float = 0.12
+    epsilon_decay_steps: int = 400000
+    transaction_cost: float = 0.0035
+    hold_penalty: float = 0.0002
+    overtrade_penalty: float = 0.003
+    reward_scale: float = 3.0
     train_split: float = 0.8
-    max_abs_log_return: float = 0.05
-    min_train_window: int = 320
-    max_train_window: int = 1200
-    recent_bias_strength: float = 2.0
+    max_abs_log_return: float = 0.015
+    min_train_window: int = 1200
+    max_train_window: int = 3200
+    recent_bias_strength: float = 1.0
     checkpoint_interval: int = 50
     eval_interval: int = 20
     seed: int = 42
@@ -297,7 +297,7 @@ def train_dqn(
     beta_start = 0.4
     beta_frames = cfg.episodes * len(train_states)
 
-    best_eval_reward = float("-inf")
+    best_eval_reward_per_step = float("-inf")
     total_steps = 0
     train_start = time.perf_counter()
 
@@ -310,6 +310,7 @@ def train_dqn(
         buy_actions = 0
         sell_actions = 0
         trade_count = 0
+        ep_steps = 0
 
         while not done:
             if stop_requested is not None and stop_requested():
@@ -328,6 +329,7 @@ def train_dqn(
             replay.add((state, action, reward, next_state, float(done)))
             state = next_state
             ep_reward += reward
+            ep_steps += 1
             ep_net_log_profit += info["position"] * info["clipped_log_return"] - info["trade_size"] * cfg.transaction_cost
             trade_count += int(info["trade_size"] > 0)
             if action == 1:
@@ -370,17 +372,23 @@ def train_dqn(
                     target_param.data.copy_(cfg.tau * param.data + (1.0 - cfg.tau) * target_param.data)
 
         profit_pct = (math.exp(ep_net_log_profit) - 1.0) * 100.0
+        train_reward_per_step = ep_reward / max(ep_steps, 1)
         eval_reward = None
+        eval_reward_per_step = None
         summary = (
             f"episode={episode:04d} profit={profit_pct:+.2f}% buys={buy_actions} sells={sell_actions} "
-            f"trades={trade_count} train_reward={ep_reward:.4f} return_clips={env.return_clip_events} "
-            f"slice={slice_start}:{slice_end}"
+            f"trades={trade_count} train_reward={ep_reward:.4f} train_r_step={train_reward_per_step:.4f} "
+            f"steps={ep_steps} return_clips={env.return_clip_events} slice={slice_start}:{slice_end}"
         )
         if episode % cfg.eval_interval == 0:
-            eval_reward = evaluate_policy(eval_env, policy_net, device)
-            print(f"{summary} eval_reward={eval_reward:.4f} eps={_epsilon(total_steps, cfg):.4f}")
-            if eval_reward > best_eval_reward:
-                best_eval_reward = eval_reward
+            eval_reward, eval_steps = evaluate_policy(eval_env, policy_net, device)
+            eval_reward_per_step = eval_reward / max(eval_steps, 1)
+            print(
+                f"{summary} eval_reward={eval_reward:.4f} eval_r_step={eval_reward_per_step:.4f} "
+                f"eps={_epsilon(total_steps, cfg):.4f}"
+            )
+            if eval_reward_per_step > best_eval_reward_per_step:
+                best_eval_reward_per_step = eval_reward_per_step
                 torch.save(policy_net.state_dict(), os.path.join(output_dir, "best_dqn_policy.pt"))
         else:
             print(f"{summary} eps={_epsilon(total_steps, cfg):.4f}")
@@ -394,12 +402,15 @@ def train_dqn(
                     "episode": episode,
                     "total_episodes": cfg.episodes,
                     "train_reward": ep_reward,
+                    "train_reward_per_step": train_reward_per_step,
+                    "episode_steps": ep_steps,
                     "profit_pct": profit_pct,
                     "buy_actions": buy_actions,
                     "sell_actions": sell_actions,
                     "trade_count": trade_count,
                     "return_clip_events": env.return_clip_events,
                     "eval_reward": eval_reward,
+                    "eval_reward_per_step": eval_reward_per_step,
                     "slice_start": slice_start,
                     "slice_end": slice_end,
                     "epsilon": _epsilon(total_steps, cfg),
@@ -421,7 +432,7 @@ def train_dqn(
                 optimizer,
                 episode,
                 total_steps,
-                best_eval_reward,
+                best_eval_reward_per_step,
             )
 
     torch.save(policy_net.state_dict(), os.path.join(output_dir, "last_dqn_policy.pt"))
@@ -433,7 +444,7 @@ def train_dqn(
                 "config": asdict(cfg),
                 "feature_columns": feature_columns,
                 "state_dim": state_dim,
-                "best_eval_reward": best_eval_reward,
+                "best_eval_reward_per_step": best_eval_reward_per_step,
                 "device": str(device),
                 "num_samples": int(len(states)),
                 "train_samples": int(len(train_states)),
@@ -444,17 +455,19 @@ def train_dqn(
         )
 
 
-def evaluate_policy(env: SP500TradingEnv, policy_net: DuelingQNetwork, device: torch.device) -> float:
+def evaluate_policy(env: SP500TradingEnv, policy_net: DuelingQNetwork, device: torch.device) -> tuple[float, int]:
     state = env.reset(start_idx=0, end_idx=len(env.states) - 1)
     done = False
     reward = 0.0
+    steps = 0
     while not done:
         with torch.no_grad():
             st = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
             action = int(policy_net(st).argmax(dim=1).item())
         state, r, done, _ = env.step(action)
         reward += r
-    return reward
+        steps += 1
+    return reward, steps
 
 
 def predict_dqn_action(data_path: str, model_path: str, scaler_path: str, meta_path: str) -> str:
@@ -483,13 +496,44 @@ def predict_dqn_action(data_path: str, model_path: str, scaler_path: str, meta_p
     return mapping[action]
 
 
-def parse_args():
+def _build_config_from_args(args: argparse.Namespace) -> DQNConfig:
+    cfg_values = asdict(DQNConfig())
+
+    if args.config_json:
+        with open(args.config_json, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        for key, value in loaded.items():
+            if key in cfg_values:
+                cfg_values[key] = value
+
+    for key in cfg_values:
+        override = getattr(args, key, None)
+        if override is not None:
+            cfg_values[key] = override
+
+    return DQNConfig(**cfg_values)
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--config-json",
+        default=None,
+        help="Optional path to a JSON file containing DQNConfig field overrides.",
+    )
+
+    defaults = asdict(DQNConfig())
+    for key, value in defaults.items():
+        value_type = type(value)
+        if isinstance(value, bool):
+            continue
+        parser.add_argument(f"--{key.replace('_', '-')}", dest=key, type=value_type, default=None)
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    train_dqn(args.data, args.output, DQNConfig())
+    train_dqn(args.data, args.output, _build_config_from_args(args))
