@@ -137,6 +137,10 @@ Or load a JSON config file with `--config-json path/to/dqn_config.json`.
 
 Default DQN settings were tuned toward better out-of-sample stability (slower epsilon decay, lower terminal epsilon, stronger trading frictions, lower reward scaling, wider training windows, and less aggressive recency bias).
 
+DQN training now reports **reward per episode step** (with the raw unnormalized episode reward also shown), so episodes with longer sampled slices are directly comparable.
+
+The GUI also creates and uses a SQLite profile database at `data/model_profiles.db` with three starter DQN profiles (`balanced`, `conservative`, `aggressive`) that you can load and save from the DQN tab.
+
 When downloading from Yahoo, the app prints the **latest OHLCV row** to the console so you can confirm the columns are correctly matched.
 
 You can also provide a SQLite path (default: `data/sp500.db`) and the same OHLCV rows will be upserted into table `sp500_ohlcv`.

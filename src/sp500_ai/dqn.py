@@ -23,7 +23,7 @@ from .features import build_features
 @dataclass
 class DQNConfig:
     seq_len: int = 30
-    episodes: int = 500
+    episodes: int = 700
     batch_size: int = 256
     replay_size: int = 20000
     warmup_steps: int = 2000
@@ -37,18 +37,19 @@ class DQNConfig:
     target_update_interval: int = 10
     epsilon_start: float = 1.0
     epsilon_end: float = 0.02
-    epsilon_decay_steps: int = 120000
+    epsilon_decay_steps: int = 140000
     transaction_cost: float = 0.002
-    hold_penalty: float = 0.00001
-    overtrade_penalty: float = 0.001
-    reward_scale: float = 10.0
+    hold_penalty: float = 0.00002
+    overtrade_penalty: float = 0.0009
+    reward_scale: float = 8.0
     train_split: float = 0.8
     max_abs_log_return: float = 0.03
-    min_train_window: int = 600
-    max_train_window: int = 2200
-    recent_bias_strength: float = 1.2
+    min_train_window: int = 900
+    max_train_window: int = 2400
+    recent_bias_strength: float = 1.3
     checkpoint_interval: int = 50
     eval_interval: int = 20
+    normalize_episode_reward: bool = True
     seed: int = 42
 
 
@@ -307,6 +308,7 @@ def train_dqn(
         done = False
         ep_reward = 0.0
         ep_net_log_profit = 0.0
+        episode_steps = 0
         buy_actions = 0
         sell_actions = 0
         trade_count = 0
@@ -335,6 +337,7 @@ def train_dqn(
             elif action == 2:
                 sell_actions += 1
             total_steps += 1
+            episode_steps += 1
 
             if len(replay) < max(cfg.batch_size, cfg.warmup_steps):
                 continue
@@ -370,10 +373,12 @@ def train_dqn(
                     target_param.data.copy_(cfg.tau * param.data + (1.0 - cfg.tau) * target_param.data)
 
         profit_pct = (math.exp(ep_net_log_profit) - 1.0) * 100.0
+        reward_denom = max(episode_steps, 1) if cfg.normalize_episode_reward else 1
+        normalized_ep_reward = ep_reward / reward_denom
         eval_reward = None
         summary = (
             f"episode={episode:04d} profit={profit_pct:+.2f}% buys={buy_actions} sells={sell_actions} "
-            f"trades={trade_count} train_reward={ep_reward:.4f} return_clips={env.return_clip_events} "
+            f"trades={trade_count} train_reward={normalized_ep_reward:.4f} raw_reward={ep_reward:.4f} steps={episode_steps} return_clips={env.return_clip_events} "
             f"slice={slice_start}:{slice_end}"
         )
         if episode % cfg.eval_interval == 0:
@@ -393,7 +398,9 @@ def train_dqn(
                     "kind": "dqn",
                     "episode": episode,
                     "total_episodes": cfg.episodes,
-                    "train_reward": ep_reward,
+                    "train_reward": normalized_ep_reward,
+                    "train_reward_raw": ep_reward,
+                    "episode_steps": episode_steps,
                     "profit_pct": profit_pct,
                     "buy_actions": buy_actions,
                     "sell_actions": sell_actions,
