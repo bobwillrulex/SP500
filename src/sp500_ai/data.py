@@ -21,6 +21,7 @@ class PreparedData:
     scaler: StandardScaler
     target_scaler: StandardScaler
     feature_columns: list[str]
+    latest_close: float
 
 
 def load_ohlcv_csv(path: str) -> pd.DataFrame:
@@ -46,7 +47,10 @@ def prepare_data(df: pd.DataFrame, seq_len: int, val_ratio: float) -> PreparedDa
     feats = build_features(df)
     aligned = df.loc[feats.index].copy()
 
-    target = aligned["close"].shift(-1)
+    # Predict next-day return instead of raw index level so the target remains
+    # stationary across long histories.
+    next_close = aligned["close"].shift(-1)
+    target = (next_close / aligned["close"]) - 1.0
     feats = feats.iloc[:-1]
     target = target.iloc[:-1]
 
@@ -74,4 +78,5 @@ def prepare_data(df: pd.DataFrame, seq_len: int, val_ratio: float) -> PreparedDa
         scaler=scaler,
         target_scaler=y_scaler,
         feature_columns=list(feats.columns),
+        latest_close=float(aligned["close"].iloc[-1]),
     )

@@ -129,6 +129,7 @@ def train_once(
         "config": cfg.__dict__,
         "best_val_huber": best_val,
         "device": str(device),
+        "target_type": "next_return",
     }
     with open(os.path.join(output_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
