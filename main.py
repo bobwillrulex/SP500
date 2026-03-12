@@ -18,11 +18,13 @@ if str(SRC) not in sys.path:
 
 from sp500_ai.config import TrainConfig
 from sp500_ai.dqn import DQNConfig, predict_dqn_action, train_dqn
+from sp500_ai.profile_store import ensure_profile_db, list_profiles, load_profile_params, save_profile
 from sp500_ai.predict import predict_next_close_with_metrics
 from sp500_ai.train import train_once
 from sp500_ai.yahoo import fetch_sp500_history
 
 SETTINGS_PATH = ROOT / ".gui_settings.json"
+MODEL_PROFILES_DB_PATH = ROOT / "data" / "model_profiles.db"
 
 
 def format_eta(seconds: float) -> str:
@@ -77,6 +79,7 @@ class SP500AIGUI(Tk):
 
         self.settings = self._load_settings()
         self.vars: dict[str, StringVar] = {}
+        ensure_profile_db(MODEL_PROFILES_DB_PATH, asdict(DQNConfig()))
         self._init_style()
         self._build_ui()
         self.after(120, self._drain_queue)
@@ -222,6 +225,18 @@ class SP500AIGUI(Tk):
         self._add_field(io_card, 4, "Scaler path", "dqn.scaler_path", self.defaults["dqn"]["scaler_path"])
         self._add_field(io_card, 5, "Meta path", "dqn.meta_path", self.defaults["dqn"]["meta_path"])
 
+        profile_row = ttk.Frame(io_card, style="Card.TFrame")
+        profile_row.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 2))
+        profile_row.columnconfigure(1, weight=1)
+        ttk.Label(profile_row, text="Model profile", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.dqn_profile_var = self._var("dqn.profile_name", "balanced")
+        self.dqn_profile_combo = ttk.Combobox(profile_row, textvariable=self.dqn_profile_var, state="readonly")
+        self.dqn_profile_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(profile_row, text="Load", command=self.load_dqn_profile_ui).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(profile_row, text="Save", command=self.save_dqn_profile_ui).grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(profile_row, text="Refresh", command=self.refresh_dqn_profiles).grid(row=0, column=4)
+        self.refresh_dqn_profiles()
+
         self._build_param_grid(parent, "DQN Parameters", "dqn_params", self.defaults["dqn_params"], self.reset_dqn_defaults)
 
         self.dqn_progress = ttk.Progressbar(parent, mode="determinate", maximum=100)
@@ -281,6 +296,50 @@ class SP500AIGUI(Tk):
         for k, v in self.defaults["dqn_params"].items():
             self.vars[f"dqn_params.{k}"].set(v)
         self.log(self.dqn_log, "DQN params reset to defaults")
+
+    def refresh_dqn_profiles(self) -> None:
+        profiles = list_profiles(MODEL_PROFILES_DB_PATH)
+        names = [p["name"] for p in profiles]
+        self.dqn_profile_combo["values"] = names
+        current = self.dqn_profile_var.get()
+        if current not in names and names:
+            self.dqn_profile_var.set(names[0])
+
+    def load_dqn_profile_ui(self) -> None:
+        profile_name = self.dqn_profile_var.get().strip()
+        if not profile_name:
+            self.log(self.dqn_log, "Select a profile first")
+            return
+        params = load_profile_params(MODEL_PROFILES_DB_PATH, profile_name)
+        if params is None:
+            self.log(self.dqn_log, f"Profile not found: {profile_name}")
+            return
+        for key, default in self.defaults["dqn_params"].items():
+            value = params.get(key, default)
+            self.vars[f"dqn_params.{key}"].set(str(value))
+        self.vars["dqn.model_name"].set(profile_name)
+        self._apply_dqn_model_name_paths()
+        self.log(self.dqn_log, f"Loaded DQN profile: {profile_name}")
+
+    def save_dqn_profile_ui(self) -> None:
+        suggested = self.dqn_profile_var.get().strip() or self.vars["dqn.model_name"].get().strip() or "custom"
+        answer = simpledialog.askstring("Save DQN profile", "Profile name:", initialvalue=suggested, parent=self)
+        if answer is None:
+            return
+        name = self._safe_model_name(answer)
+        desc = simpledialog.askstring(
+            "Save DQN profile",
+            "Short description:",
+            initialvalue=f"Saved from GUI at {dt.datetime.now(dt.UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+            parent=self,
+        )
+        if desc is None:
+            return
+        params = asdict(self._dqn_cfg())
+        save_profile(MODEL_PROFILES_DB_PATH, name, desc.strip() or "Saved from GUI", params)
+        self.dqn_profile_var.set(name)
+        self.refresh_dqn_profiles()
+        self.log(self.dqn_log, f"Saved DQN profile: {name}")
 
     def _forecast_cfg(self) -> TrainConfig:
         payload = asdict(TrainConfig())
@@ -567,7 +626,8 @@ class SP500AIGUI(Tk):
                         f"buys={data.get('buy_actions', 0)} sells={data.get('sell_actions', 0)} "
                         f"trades={data.get('trade_count', 0)} | "
                         f"slice={data.get('slice_start', 0)}:{data.get('slice_end', 0)} | "
-                        f"reward={data['train_reward']:.4f}{eval_part} | ETA {format_eta(data['eta_seconds'])}"
+                        f"reward/step={data['train_reward']:.4f} raw={data.get('train_reward_raw', 0.0):.4f} "
+                        f"steps={data.get('episode_steps', 0)}{eval_part} | ETA {format_eta(data['eta_seconds'])}"
                     )
                 )
             elif typ == "forecast_prediction":
