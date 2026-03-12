@@ -27,6 +27,23 @@ def predict_next_close(
     meta_path: str | None = None,
     target_scaler_path: str | None = None,
 ) -> float:
+    predicted_close, _, _ = predict_next_close_with_metrics(
+        data_path=data_path,
+        model_path=model_path,
+        scaler_path=scaler_path,
+        meta_path=meta_path,
+        target_scaler_path=target_scaler_path,
+    )
+    return predicted_close
+
+
+def predict_next_close_with_metrics(
+    data_path: str,
+    model_path: str,
+    scaler_path: str,
+    meta_path: str | None = None,
+    target_scaler_path: str | None = None,
+) -> tuple[float, float, float]:
     resolved_meta_path = meta_path or model_path.replace("best_model.pt", "meta.json")
     resolved_target_scaler_path = target_scaler_path or model_path.replace("best_model.pt", "target_scaler.pkl")
     with open(resolved_meta_path, "r", encoding="utf-8") as f:
@@ -67,16 +84,28 @@ def predict_next_close(
             ) from exc
 
         predicted_return = float(target_scaler.inverse_transform([[normalized_pred]])[0, 0])
-        return float(prepared.latest_close * (1.0 + predicted_return))
+        predicted_close = float(prepared.latest_close * (1.0 + predicted_return))
+        percentage_gain = predicted_return * 100.0
+        return predicted_close, float(prepared.latest_close), percentage_gain
 
     # Legacy compatibility for old checkpoints that predicted raw close directly.
-    return float(normalized_pred)
+    predicted_close = float(normalized_pred)
+    percentage_gain = ((predicted_close - float(prepared.latest_close)) / float(prepared.latest_close)) * 100.0
+    return predicted_close, float(prepared.latest_close), percentage_gain
 
 
 def main():
     args = parse_args()
-    pred = predict_next_close(args.data, args.model, args.scaler, args.meta, args.target_scaler)
+    pred, latest_close, pct_gain = predict_next_close_with_metrics(
+        args.data,
+        args.model,
+        args.scaler,
+        args.meta,
+        args.target_scaler,
+    )
     print(f"Predicted next close: {pred:.4f}")
+    print(f"Latest close: {latest_close:.4f}")
+    print(f"Predicted percentage gain: {pct_gain:+.4f}%")
 
 
 if __name__ == "__main__":

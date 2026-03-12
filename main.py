@@ -18,7 +18,7 @@ if str(SRC) not in sys.path:
 
 from sp500_ai.config import TrainConfig
 from sp500_ai.dqn import DQNConfig, predict_dqn_action, train_dqn
-from sp500_ai.predict import predict_next_close
+from sp500_ai.predict import predict_next_close_with_metrics
 from sp500_ai.train import train_once
 from sp500_ai.yahoo import fetch_sp500_history
 
@@ -360,13 +360,20 @@ class SP500AIGUI(Tk):
         self._save_settings()
 
         def job() -> None:
-            pred = predict_next_close(
+            pred, latest_close, pct_gain = predict_next_close_with_metrics(
                 self.vars["yahoo.data_path"].get(),
                 self.vars["forecast.model_path"].get(),
                 self.vars["forecast.scaler_path"].get(),
                 self.vars["forecast.meta_path"].get(),
             )
-            self._event_queue.put({"type": "forecast_prediction", "value": pred})
+            self._event_queue.put(
+                {
+                    "type": "forecast_prediction",
+                    "value": pred,
+                    "latest_close": latest_close,
+                    "pct_gain": pct_gain,
+                }
+            )
 
         self._start_worker("forecast_predict", job)
 
@@ -440,7 +447,14 @@ class SP500AIGUI(Tk):
                     )
                 )
             elif typ == "forecast_prediction":
-                self.log(self.forecast_log, f"Predicted next close: {evt['value']:.4f}")
+                self.log(
+                    self.forecast_log,
+                    (
+                        f"Predicted next close: {evt['value']:.4f} | "
+                        f"latest close: {evt['latest_close']:.4f} | "
+                        f"predicted gain: {evt['pct_gain']:+.4f}%"
+                    ),
+                )
             elif typ == "dqn_prediction":
                 self.log(self.dqn_log, f"DQN action signal: {evt['value']}")
             elif typ == "log":
