@@ -36,17 +36,17 @@ class DQNConfig:
     grad_clip: float = 1.0
     target_update_interval: int = 10
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.1
-    epsilon_decay_steps: int = 25000
-    transaction_cost: float = 0.001
-    hold_penalty: float = 0.00008
-    overtrade_penalty: float = 0.00025
-    reward_scale: float = 25.0
+    epsilon_end: float = 0.02
+    epsilon_decay_steps: int = 120000
+    transaction_cost: float = 0.002
+    hold_penalty: float = 0.00001
+    overtrade_penalty: float = 0.001
+    reward_scale: float = 10.0
     train_split: float = 0.8
-    max_abs_log_return: float = 0.05
-    min_train_window: int = 320
-    max_train_window: int = 1200
-    recent_bias_strength: float = 2.0
+    max_abs_log_return: float = 0.03
+    min_train_window: int = 600
+    max_train_window: int = 2200
+    recent_bias_strength: float = 1.2
     checkpoint_interval: int = 50
     eval_interval: int = 20
     seed: int = 42
@@ -483,13 +483,44 @@ def predict_dqn_action(data_path: str, model_path: str, scaler_path: str, meta_p
     return mapping[action]
 
 
-def parse_args():
+def _build_config_from_args(args: argparse.Namespace) -> DQNConfig:
+    cfg_values = asdict(DQNConfig())
+
+    if args.config_json:
+        with open(args.config_json, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        for key, value in loaded.items():
+            if key in cfg_values:
+                cfg_values[key] = value
+
+    for key in cfg_values:
+        override = getattr(args, key, None)
+        if override is not None:
+            cfg_values[key] = override
+
+    return DQNConfig(**cfg_values)
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--config-json",
+        default=None,
+        help="Optional path to a JSON file containing DQNConfig field overrides.",
+    )
+
+    defaults = asdict(DQNConfig())
+    for key, value in defaults.items():
+        value_type = type(value)
+        if isinstance(value, bool):
+            continue
+        parser.add_argument(f"--{key.replace('_', '-')}", dest=key, type=value_type, default=None)
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    train_dqn(args.data, args.output, DQNConfig())
+    train_dqn(args.data, args.output, _build_config_from_args(args))

@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
-from tkinter import StringVar, Tk, ttk
+from tkinter import StringVar, Tk, simpledialog, ttk
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
@@ -65,10 +65,11 @@ class SP500AIGUI(Tk):
                 "interval_seconds": "3600",
             },
             "dqn": {
-                "output_dir": "artifacts/dqn_run1",
-                "model_path": "artifacts/dqn_run1/best_dqn_policy.pt",
-                "scaler_path": "artifacts/dqn_run1/dqn_scaler.pkl",
-                "meta_path": "artifacts/dqn_run1/dqn_meta.json",
+                "model_name": "default",
+                "output_dir": "artifacts/dqn_models/default",
+                "model_path": "artifacts/dqn_models/default/best_dqn_policy.pt",
+                "scaler_path": "artifacts/dqn_models/default/dqn_scaler.pkl",
+                "meta_path": "artifacts/dqn_models/default/dqn_meta.json",
             },
             "forecast_params": {k: str(v) for k, v in asdict(TrainConfig()).items()},
             "dqn_params": {k: str(v) for k, v in asdict(DQNConfig()).items()},
@@ -208,16 +209,18 @@ class SP500AIGUI(Tk):
         ttk.Button(row, text="Train DQN", style="Accent.TButton", command=self.train_dqn_ui).pack(side="left", padx=(0, 8))
         self.dqn_stop_btn = ttk.Button(row, text="Stop DQN Training", command=self.stop_dqn_training, state="disabled")
         self.dqn_stop_btn.pack(side="left", padx=(0, 8))
-        ttk.Button(row, text="Predict Action", command=self.predict_dqn_ui).pack(side="left")
+        ttk.Button(row, text="Predict Action", command=self.predict_dqn_ui).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Run Scan", command=self.run_scan_ui).pack(side="left")
 
         io_card = ttk.Frame(parent, style="Card.TFrame")
         io_card.pack(fill="x", pady=(0, 10))
         io_card.columnconfigure(1, weight=1)
         ttk.Label(io_card, text="DQN Artifacts", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self._add_field(io_card, 1, "Output dir", "dqn.output_dir", self.defaults["dqn"]["output_dir"])
-        self._add_field(io_card, 2, "Model path", "dqn.model_path", self.defaults["dqn"]["model_path"])
-        self._add_field(io_card, 3, "Scaler path", "dqn.scaler_path", self.defaults["dqn"]["scaler_path"])
-        self._add_field(io_card, 4, "Meta path", "dqn.meta_path", self.defaults["dqn"]["meta_path"])
+        self._add_field(io_card, 1, "Model name", "dqn.model_name", self.defaults["dqn"]["model_name"])
+        self._add_field(io_card, 2, "Output dir", "dqn.output_dir", self.defaults["dqn"]["output_dir"])
+        self._add_field(io_card, 3, "Model path", "dqn.model_path", self.defaults["dqn"]["model_path"])
+        self._add_field(io_card, 4, "Scaler path", "dqn.scaler_path", self.defaults["dqn"]["scaler_path"])
+        self._add_field(io_card, 5, "Meta path", "dqn.meta_path", self.defaults["dqn"]["meta_path"])
 
         self._build_param_grid(parent, "DQN Parameters", "dqn_params", self.defaults["dqn_params"], self.reset_dqn_defaults)
 
@@ -346,11 +349,84 @@ class SP500AIGUI(Tk):
 
         self._start_worker("forecast_train", job)
 
+
+    @staticmethod
+    def _safe_model_name(name: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name.strip())
+        return cleaned or "default"
+
+    def _apply_dqn_model_name_paths(self) -> str:
+        model_name = self._safe_model_name(self.vars["dqn.model_name"].get())
+        model_dir = Path("artifacts") / "dqn_models" / model_name
+        self.vars["dqn.model_name"].set(model_name)
+        self.vars["dqn.output_dir"].set(str(model_dir))
+        self.vars["dqn.model_path"].set(str(model_dir / "best_dqn_policy.pt"))
+        self.vars["dqn.scaler_path"].set(str(model_dir / "dqn_scaler.pkl"))
+        self.vars["dqn.meta_path"].set(str(model_dir / "dqn_meta.json"))
+        return model_name
+
+    def _discover_dqn_models(self) -> list[dict[str, str]]:
+        models: list[dict[str, str]] = []
+
+        current = {
+            "name": self._safe_model_name(self.vars["dqn.model_name"].get()),
+            "model_path": self.vars["dqn.model_path"].get(),
+            "scaler_path": self.vars["dqn.scaler_path"].get(),
+            "meta_path": self.vars["dqn.meta_path"].get(),
+        }
+        if all(Path(current[k]).exists() for k in ("model_path", "scaler_path", "meta_path")):
+            models.append(current)
+
+        root = Path("artifacts") / "dqn_models"
+        if root.exists():
+            for child in sorted(root.iterdir()):
+                if not child.is_dir():
+                    continue
+                candidate = {
+                    "name": child.name,
+                    "model_path": str(child / "best_dqn_policy.pt"),
+                    "scaler_path": str(child / "dqn_scaler.pkl"),
+                    "meta_path": str(child / "dqn_meta.json"),
+                }
+                if all(Path(candidate[k]).exists() for k in ("model_path", "scaler_path", "meta_path")):
+                    if not any(m["model_path"] == candidate["model_path"] for m in models):
+                        models.append(candidate)
+
+        return models
+
+    def _pick_model_for_scan(self, models: list[dict[str, str]]) -> dict[str, str] | None:
+        if not models:
+            return None
+        if len(models) == 1:
+            return models[0]
+
+        options = "\n".join(f"{idx + 1}. {m['name']}" for idx, m in enumerate(models))
+        answer = simpledialog.askstring(
+            "Choose model for scan",
+            f"Multiple trained models found.\nWhich model should run first?\n\n{options}\n\nEnter number:",
+            parent=self,
+        )
+        if answer is None:
+            return None
+
+        try:
+            idx = int(answer.strip()) - 1
+        except ValueError:
+            self.log(self.dqn_log, "Invalid model selection. Scan cancelled.")
+            return None
+
+        if idx < 0 or idx >= len(models):
+            self.log(self.dqn_log, "Model selection out of range. Scan cancelled.")
+            return None
+
+        return models[idx]
+
     def train_dqn_ui(self) -> None:
         if self._dqn_running:
             self.log(self.dqn_log, "DQN training is already running")
             return
 
+        model_name = self._apply_dqn_model_name_paths()
         self._save_settings()
         cfg = self._dqn_cfg()
         self._dqn_stop.clear()
@@ -358,6 +434,7 @@ class SP500AIGUI(Tk):
         self.dqn_stop_btn.configure(state="normal")
         self.dqn_progress["value"] = 0
         self.dqn_status.configure(text="Training started...")
+        self.log(self.dqn_log, f"Training DQN model: {model_name}")
 
         def callback(data: dict) -> None:
             self._event_queue.put({"type": "dqn_progress", "data": data})
@@ -415,6 +492,24 @@ class SP500AIGUI(Tk):
             self._event_queue.put({"type": "dqn_prediction", "value": signal})
 
         self._start_worker("dqn_predict", job)
+
+
+    def run_scan_ui(self) -> None:
+        self._save_settings()
+        models = self._discover_dqn_models()
+        selected = self._pick_model_for_scan(models)
+        if selected is None:
+            if not models:
+                self.log(self.dqn_log, "No trained DQN models found. Train a model first.")
+            return
+
+        self.vars["dqn.model_name"].set(selected["name"])
+        self.vars["dqn.model_path"].set(selected["model_path"])
+        self.vars["dqn.scaler_path"].set(selected["scaler_path"])
+        self.vars["dqn.meta_path"].set(selected["meta_path"])
+        self.vars["dqn.output_dir"].set(str(Path(selected["model_path"]).parent))
+        self.log(self.dqn_log, f"Running scan with model: {selected['name']}")
+        self.predict_dqn_ui()
 
     def toggle_continuous(self) -> None:
         self._save_settings()
