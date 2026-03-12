@@ -72,7 +72,7 @@ def train_once(
     criterion = nn.HuberLoss(delta=2.0)
 
     best_val = float("inf")
-    patience = 10
+    patience = max(0, cfg.early_stopping_patience)
     stale = 0
 
     train_start = time.perf_counter()
@@ -117,8 +117,8 @@ def train_once(
             torch.save(model.state_dict(), os.path.join(output_dir, "best_model.pt"))
         else:
             stale += 1
-            if stale >= patience:
-                print("Early stopping triggered.")
+            if patience and stale >= patience:
+                print(f"Early stopping triggered after {epoch} epochs (patience={patience}).")
                 break
 
     joblib.dump(prepared.scaler, os.path.join(output_dir, "scaler.pkl"))

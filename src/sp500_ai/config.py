@@ -15,6 +15,7 @@ class TrainConfig:
     val_ratio: float = 0.2
     seed: int = 42
     grad_clip: float = 1.0
+    early_stopping_patience: int = 0
 
 
 REQUIRED_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
