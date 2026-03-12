@@ -7,6 +7,7 @@ import os
 import random
 import time
 from collections.abc import Callable
+from typing import Any
 from dataclasses import asdict, dataclass
 
 import joblib
@@ -23,24 +24,29 @@ from .features import build_features
 class DQNConfig:
     seq_len: int = 30
     episodes: int = 500
-    batch_size: int = 128
+    batch_size: int = 256
     replay_size: int = 20000
-    warmup_steps: int = 1200
+    warmup_steps: int = 2000
     hidden_dim: int = 256
     dropout: float = 0.15
     lr: float = 2e-4
     weight_decay: float = 1e-5
-    gamma: float = 0.995
+    gamma: float = 0.99
     tau: float = 0.01
     grad_clip: float = 1.0
     target_update_interval: int = 10
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    epsilon_decay_steps: int = 12000
-    transaction_cost: float = 0.0005
-    hold_penalty: float = 0.00005
-    overtrade_penalty: float = 0.0001
-    reward_scale: float = 100.0
+    epsilon_end: float = 0.1
+    epsilon_decay_steps: int = 25000
+    transaction_cost: float = 0.001
+    hold_penalty: float = 0.00008
+    overtrade_penalty: float = 0.00025
+    reward_scale: float = 25.0
+    train_split: float = 0.8
+    max_abs_log_return: float = 0.05
+    min_train_window: int = 320
+    max_train_window: int = 1200
+    recent_bias_strength: float = 2.0
     checkpoint_interval: int = 50
     eval_interval: int = 20
     seed: int = 42
@@ -127,12 +133,18 @@ class SP500TradingEnv:
         self.states = states
         self.close = close
         self.cfg = cfg
+        self.return_clip_events = 0
         self.reset()
 
-    def reset(self) -> np.ndarray:
-        self.idx = 0
+    def reset(self, start_idx: int = 0, end_idx: int | None = None) -> np.ndarray:
+        max_end = len(self.states) - 1
+        self.start_idx = int(max(0, min(start_idx, max_end - 1)))
+        target_end = max_end if end_idx is None else int(end_idx)
+        self.end_idx = int(max(self.start_idx + 1, min(target_end, max_end)))
+        self.idx = self.start_idx
         self.position = 0
         self.done = False
+        self.return_clip_events = 0
         return self._state()
 
     def _state(self) -> np.ndarray:
@@ -147,8 +159,11 @@ class SP500TradingEnv:
         price_now = self.close[self.idx]
         price_next = self.close[self.idx + 1]
         log_return = float(math.log((price_next + 1e-9) / (price_now + 1e-9)))
+        clipped_log_return = float(np.clip(log_return, -self.cfg.max_abs_log_return, self.cfg.max_abs_log_return))
+        if not math.isclose(clipped_log_return, log_return):
+            self.return_clip_events += 1
 
-        reward = new_position * log_return
+        reward = new_position * clipped_log_return
         reward -= trade_size * self.cfg.transaction_cost
         reward -= abs(new_position) * self.cfg.hold_penalty
         reward -= trade_size * self.cfg.overtrade_penalty
@@ -156,9 +171,10 @@ class SP500TradingEnv:
 
         self.position = new_position
         self.idx += 1
-        self.done = self.idx >= len(self.states) - 1
+        self.done = self.idx >= self.end_idx
         info = {
             "log_return": log_return,
+            "clipped_log_return": clipped_log_return,
             "trade_size": float(trade_size),
             "position": float(new_position),
         }
@@ -193,6 +209,40 @@ def _make_states(data_path: str, seq_len: int) -> tuple[np.ndarray, np.ndarray, 
     return states_arr, close_arr, scaler, list(feat.columns)
 
 
+def _split_train_eval(
+    states: np.ndarray,
+    close: np.ndarray,
+    train_split: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    split_idx = int(len(states) * train_split)
+    split_idx = min(max(split_idx, 200), len(states) - 200)
+    train_states = states[:split_idx]
+    train_close = close[:split_idx]
+    eval_states = states[split_idx:]
+    eval_close = close[split_idx:]
+    if len(train_states) < 200 or len(eval_states) < 200:
+        raise ValueError("Not enough samples to create train/eval split. Increase data history or adjust train_split.")
+    return train_states, train_close, eval_states, eval_close
+
+
+def _sample_episode_slice(total_len: int, cfg: DQNConfig) -> tuple[int, int]:
+    max_start = max(total_len - 2, 1)
+    if total_len <= cfg.min_train_window + 1:
+        return 0, max_start
+
+    max_window = min(cfg.max_train_window, total_len - 1)
+    min_window = min(cfg.min_train_window, max_window)
+    window = random.randint(min_window, max_window)
+
+    # Bias episode windows toward recent history while still sampling older data.
+    u = random.random()
+    recency = 1.0 - (1.0 - u) ** max(cfg.recent_bias_strength, 1.0)
+    end_idx = int(recency * (total_len - 1))
+    end_idx = max(window, min(end_idx, total_len - 1))
+    start_idx = max(0, end_idx - window)
+    return start_idx, end_idx
+
+
 def _epsilon(step: int, cfg: DQNConfig) -> float:
     ratio = min(step / max(cfg.epsilon_decay_steps, 1), 1.0)
     return cfg.epsilon_start + ratio * (cfg.epsilon_end - cfg.epsilon_start)
@@ -225,13 +275,16 @@ def train_dqn(
     data_path: str,
     output_dir: str,
     cfg: DQNConfig,
-    progress_callback: Callable[[dict], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
     set_seed(cfg.seed)
 
     states, close, scaler, feature_columns = _make_states(data_path, cfg.seq_len)
-    env = SP500TradingEnv(states, close, cfg)
+    train_states, train_close, eval_states, eval_close = _split_train_eval(states, close, cfg.train_split)
+    env = SP500TradingEnv(train_states, train_close, cfg)
+    eval_env = SP500TradingEnv(eval_states, eval_close, cfg)
     state_dim = states.shape[1] + 2
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -242,14 +295,15 @@ def train_dqn(
     optimizer = torch.optim.AdamW(policy_net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     replay = PrioritizedReplayBuffer(cfg.replay_size)
     beta_start = 0.4
-    beta_frames = cfg.episodes * len(states)
+    beta_frames = cfg.episodes * len(train_states)
 
     best_eval_reward = float("-inf")
     total_steps = 0
     train_start = time.perf_counter()
 
     for episode in range(1, cfg.episodes + 1):
-        state = env.reset()
+        slice_start, slice_end = _sample_episode_slice(len(train_states), cfg)
+        state = env.reset(start_idx=slice_start, end_idx=slice_end)
         done = False
         ep_reward = 0.0
         ep_net_log_profit = 0.0
@@ -258,6 +312,10 @@ def train_dqn(
         trade_count = 0
 
         while not done:
+            if stop_requested is not None and stop_requested():
+                print("Early stop requested; ending DQN training loop.")
+                done = True
+                break
             eps = _epsilon(total_steps, cfg)
             if random.random() < eps:
                 action = random.randint(0, 2)
@@ -270,7 +328,7 @@ def train_dqn(
             replay.add((state, action, reward, next_state, float(done)))
             state = next_state
             ep_reward += reward
-            ep_net_log_profit += info["position"] * info["log_return"] - info["trade_size"] * cfg.transaction_cost
+            ep_net_log_profit += info["position"] * info["clipped_log_return"] - info["trade_size"] * cfg.transaction_cost
             trade_count += int(info["trade_size"] > 0)
             if action == 1:
                 buy_actions += 1
@@ -315,10 +373,11 @@ def train_dqn(
         eval_reward = None
         summary = (
             f"episode={episode:04d} profit={profit_pct:+.2f}% buys={buy_actions} sells={sell_actions} "
-            f"trades={trade_count} train_reward={ep_reward:.4f}"
+            f"trades={trade_count} train_reward={ep_reward:.4f} return_clips={env.return_clip_events} "
+            f"slice={slice_start}:{slice_end}"
         )
         if episode % cfg.eval_interval == 0:
-            eval_reward = evaluate_policy(env, policy_net, device)
+            eval_reward = evaluate_policy(eval_env, policy_net, device)
             print(f"{summary} eval_reward={eval_reward:.4f} eps={_epsilon(total_steps, cfg):.4f}")
             if eval_reward > best_eval_reward:
                 best_eval_reward = eval_reward
@@ -339,13 +398,19 @@ def train_dqn(
                     "buy_actions": buy_actions,
                     "sell_actions": sell_actions,
                     "trade_count": trade_count,
+                    "return_clip_events": env.return_clip_events,
                     "eval_reward": eval_reward,
+                    "slice_start": slice_start,
+                    "slice_end": slice_end,
                     "epsilon": _epsilon(total_steps, cfg),
                     "progress": episode / max(cfg.episodes, 1),
                     "eta_seconds": max(0.0, eta_seconds),
                     "elapsed_seconds": elapsed,
                 }
             )
+
+        if stop_requested is not None and stop_requested():
+            break
 
         if episode % cfg.checkpoint_interval == 0:
             _save_checkpoint(
@@ -371,6 +436,8 @@ def train_dqn(
                 "best_eval_reward": best_eval_reward,
                 "device": str(device),
                 "num_samples": int(len(states)),
+                "train_samples": int(len(train_states)),
+                "eval_samples": int(len(eval_states)),
             },
             f,
             indent=2,
@@ -378,7 +445,7 @@ def train_dqn(
 
 
 def evaluate_policy(env: SP500TradingEnv, policy_net: DuelingQNetwork, device: torch.device) -> float:
-    state = env.reset()
+    state = env.reset(start_idx=0, end_idx=len(env.states) - 1)
     done = False
     reward = 0.0
     while not done:

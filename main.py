@@ -47,6 +47,8 @@ class SP500AIGUI(Tk):
         self._workers: list[threading.Thread] = []
         self._continuous_stop = threading.Event()
         self._continuous_running = False
+        self._dqn_stop = threading.Event()
+        self._dqn_running = False
 
         self.defaults = {
             "yahoo": {
@@ -204,6 +206,8 @@ class SP500AIGUI(Tk):
         row.pack(fill="x")
         ttk.Button(row, text="Download Data", style="Accent.TButton", command=self.download_data).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Train DQN", style="Accent.TButton", command=self.train_dqn_ui).pack(side="left", padx=(0, 8))
+        self.dqn_stop_btn = ttk.Button(row, text="Stop DQN Training", command=self.stop_dqn_training, state="disabled")
+        self.dqn_stop_btn.pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Predict Action", command=self.predict_dqn_ui).pack(side="left")
 
         io_card = ttk.Frame(parent, style="Card.TFrame")
@@ -343,8 +347,15 @@ class SP500AIGUI(Tk):
         self._start_worker("forecast_train", job)
 
     def train_dqn_ui(self) -> None:
+        if self._dqn_running:
+            self.log(self.dqn_log, "DQN training is already running")
+            return
+
         self._save_settings()
         cfg = self._dqn_cfg()
+        self._dqn_stop.clear()
+        self._dqn_running = True
+        self.dqn_stop_btn.configure(state="normal")
         self.dqn_progress["value"] = 0
         self.dqn_status.configure(text="Training started...")
 
@@ -352,9 +363,23 @@ class SP500AIGUI(Tk):
             self._event_queue.put({"type": "dqn_progress", "data": data})
 
         def job() -> None:
-            train_dqn(self.vars["yahoo.data_path"].get(), self.vars["dqn.output_dir"].get(), cfg, progress_callback=callback)
+            train_dqn(
+                self.vars["yahoo.data_path"].get(),
+                self.vars["dqn.output_dir"].get(),
+                cfg,
+                progress_callback=callback,
+                stop_requested=self._dqn_stop.is_set,
+            )
 
         self._start_worker("dqn_train", job)
+
+    def stop_dqn_training(self) -> None:
+        if not self._dqn_running:
+            self.log(self.dqn_log, "DQN training is not running")
+            return
+        self._dqn_stop.set()
+        self.dqn_status.configure(text="Stopping DQN training...")
+        self.log(self.dqn_log, "Stop requested for DQN training")
 
     def predict_forecast(self) -> None:
         self._save_settings()
@@ -446,6 +471,7 @@ class SP500AIGUI(Tk):
                         f"profit={data.get('profit_pct', 0.0):+.2f}% | "
                         f"buys={data.get('buy_actions', 0)} sells={data.get('sell_actions', 0)} "
                         f"trades={data.get('trade_count', 0)} | "
+                        f"slice={data.get('slice_start', 0)}:{data.get('slice_end', 0)} | "
                         f"reward={data['train_reward']:.4f}{eval_part} | ETA {format_eta(data['eta_seconds'])}"
                     )
                 )
@@ -471,11 +497,18 @@ class SP500AIGUI(Tk):
                 elif task == "forecast_train":
                     self.log(self.forecast_log, f"Forecast training complete -> {self.vars['forecast.output_dir'].get()}")
                 elif task == "dqn_train":
+                    self._dqn_running = False
+                    self.dqn_stop_btn.configure(state="disabled")
+                    if self._dqn_stop.is_set():
+                        self.log(self.dqn_log, "DQN training stopped early")
                     self.log(self.dqn_log, f"DQN training complete -> {self.vars['dqn.output_dir'].get()}")
                 elif task == "continuous" and self._continuous_running:
                     self._continuous_running = False
                     self.forecast_cont_btn.configure(text="Start Continuous")
             elif typ == "error":
+                if evt["task"] == "dqn_train":
+                    self._dqn_running = False
+                    self.dqn_stop_btn.configure(state="disabled")
                 msg = f"{evt['task']} failed: {evt['error']}"
                 self.log(self.forecast_log, msg)
                 self.log(self.dqn_log, msg)
@@ -484,6 +517,7 @@ class SP500AIGUI(Tk):
 
     def _on_close(self) -> None:
         self._continuous_stop.set()
+        self._dqn_stop.set()
         self._save_settings()
         self.destroy()
 
