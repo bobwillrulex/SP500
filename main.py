@@ -312,7 +312,7 @@ class SP500AIGUI(Tk):
         t.start()
 
     def log(self, widget, message: str) -> None:
-        stamp = dt.datetime.utcnow().strftime("%H:%M:%S")
+        stamp = dt.datetime.now(dt.UTC).strftime("%H:%M:%S")
         widget.insert("end", f"[{stamp}] {message}\n")
         widget.see("end")
 
@@ -408,7 +408,7 @@ class SP500AIGUI(Tk):
 
         def job() -> None:
             while not self._continuous_stop.is_set():
-                ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                ts = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
                 run_dir = os.path.join(output_base, f"run_{ts}")
                 cfg = self._forecast_cfg()
                 self._event_queue.put({"type": "log", "target": "forecast", "message": f"continuous training -> {run_dir}"})
@@ -443,6 +443,9 @@ class SP500AIGUI(Tk):
                 self.dqn_status.configure(
                     text=(
                         f"Episode {data['episode']}/{data['total_episodes']} | "
+                        f"profit={data.get('profit_pct', 0.0):+.2f}% | "
+                        f"buys={data.get('buy_actions', 0)} sells={data.get('sell_actions', 0)} "
+                        f"trades={data.get('trade_count', 0)} | "
                         f"reward={data['train_reward']:.4f}{eval_part} | ETA {format_eta(data['eta_seconds'])}"
                     )
                 )

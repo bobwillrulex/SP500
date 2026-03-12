@@ -140,7 +140,7 @@ class SP500TradingEnv:
         pos_features = np.array([self.position, self.idx / max(len(self.states) - 1, 1)], dtype=np.float32)
         return np.concatenate([base, pos_features], axis=0).astype(np.float32)
 
-    def step(self, action: int) -> tuple[np.ndarray, float, bool]:
+    def step(self, action: int) -> tuple[np.ndarray, float, bool, dict[str, float]]:
         new_position = {0: self.position, 1: 1, 2: -1}[action]
         trade_size = abs(new_position - self.position)
 
@@ -157,7 +157,12 @@ class SP500TradingEnv:
         self.position = new_position
         self.idx += 1
         self.done = self.idx >= len(self.states) - 1
-        return self._state(), float(reward), self.done
+        info = {
+            "log_return": log_return,
+            "trade_size": float(trade_size),
+            "position": float(new_position),
+        }
+        return self._state(), float(reward), self.done, info
 
 
 def set_seed(seed: int) -> None:
@@ -247,6 +252,10 @@ def train_dqn(
         state = env.reset()
         done = False
         ep_reward = 0.0
+        ep_net_log_profit = 0.0
+        buy_actions = 0
+        sell_actions = 0
+        trade_count = 0
 
         while not done:
             eps = _epsilon(total_steps, cfg)
@@ -257,10 +266,16 @@ def train_dqn(
                     st = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
                     action = int(policy_net(st).argmax(dim=1).item())
 
-            next_state, reward, done = env.step(action)
+            next_state, reward, done, info = env.step(action)
             replay.add((state, action, reward, next_state, float(done)))
             state = next_state
             ep_reward += reward
+            ep_net_log_profit += info["position"] * info["log_return"] - info["trade_size"] * cfg.transaction_cost
+            trade_count += int(info["trade_size"] > 0)
+            if action == 1:
+                buy_actions += 1
+            elif action == 2:
+                sell_actions += 1
             total_steps += 1
 
             if len(replay) < max(cfg.batch_size, cfg.warmup_steps):
@@ -296,18 +311,20 @@ def train_dqn(
                 for target_param, param in zip(target_net.parameters(), policy_net.parameters()):
                     target_param.data.copy_(cfg.tau * param.data + (1.0 - cfg.tau) * target_param.data)
 
+        profit_pct = (math.exp(ep_net_log_profit) - 1.0) * 100.0
         eval_reward = None
+        summary = (
+            f"episode={episode:04d} profit={profit_pct:+.2f}% buys={buy_actions} sells={sell_actions} "
+            f"trades={trade_count} train_reward={ep_reward:.4f}"
+        )
         if episode % cfg.eval_interval == 0:
             eval_reward = evaluate_policy(env, policy_net, device)
-            print(
-                f"episode={episode:04d} train_reward={ep_reward:.4f} eval_reward={eval_reward:.4f} "
-                f"eps={_epsilon(total_steps, cfg):.4f}"
-            )
+            print(f"{summary} eval_reward={eval_reward:.4f} eps={_epsilon(total_steps, cfg):.4f}")
             if eval_reward > best_eval_reward:
                 best_eval_reward = eval_reward
                 torch.save(policy_net.state_dict(), os.path.join(output_dir, "best_dqn_policy.pt"))
         else:
-            print(f"episode={episode:04d} train_reward={ep_reward:.4f} eps={_epsilon(total_steps, cfg):.4f}")
+            print(f"{summary} eps={_epsilon(total_steps, cfg):.4f}")
 
         elapsed = time.perf_counter() - train_start
         eta_seconds = (elapsed / episode) * (cfg.episodes - episode) if episode else 0.0
@@ -318,6 +335,10 @@ def train_dqn(
                     "episode": episode,
                     "total_episodes": cfg.episodes,
                     "train_reward": ep_reward,
+                    "profit_pct": profit_pct,
+                    "buy_actions": buy_actions,
+                    "sell_actions": sell_actions,
+                    "trade_count": trade_count,
                     "eval_reward": eval_reward,
                     "epsilon": _epsilon(total_steps, cfg),
                     "progress": episode / max(cfg.episodes, 1),
@@ -364,7 +385,7 @@ def evaluate_policy(env: SP500TradingEnv, policy_net: DuelingQNetwork, device: t
         with torch.no_grad():
             st = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
             action = int(policy_net(st).argmax(dim=1).item())
-        state, r, done = env.step(action)
+        state, r, done, _ = env.step(action)
         reward += r
     return reward
 
